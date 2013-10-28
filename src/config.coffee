@@ -2,9 +2,9 @@
 
 exports.defaults = ->
   requireBuildAutoModule:
-    patterns: []
-    exclude: []
-    dontBuild: [/specs/]
+    patterns: ["**/*.js"]
+    exclude: [/-built.js$/,/reload-client.js$/]
+    dontBuild: ["specs"]
     modules: [{
       name: "app/app-built"
       baseUrl: "app"
