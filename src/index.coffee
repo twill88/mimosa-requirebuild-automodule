@@ -157,7 +157,8 @@ __appendToModule = (moduleEntry, moduleConfig) ->
       amdFile = __getFileAMD file
       alias = amdFile.replace moduleConfig.baseUrl, moduleConfig.pathAlias
       moduleEntry.include.push(alias) if moduleConfig.includeAliasedFiles
-      moduleEntry.override.paths[alias] = amdFile
+      unless moduleEntry.override.paths[alias]?
+        moduleEntry.override.paths[alias] = amdFile
   else
     moduleConfig.includeFiles.forEach (file) ->
       moduleEntry.include.push __getFileAMD(file)
