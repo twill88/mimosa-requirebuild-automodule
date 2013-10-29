@@ -44,13 +44,27 @@ _buildAutoModules = (mimosaConfig, options, next) ->
       patterns: mimosaConfig.requireBuildAutoModule.patterns
       exclude: mimosaConfig.requireBuildAutoModule.exclude
       excludeRegex: mimosaConfig.requireBuildAutoModule.excludeRegex
+      plugins: mimosaConfig.requireBuildAutoModule.plugins
     }
 
   for userConfig in mimosaConfig.requireBuildAutoModule.modules
     __applyUserConfigs(userConfig, modules)
   
   for moduleConfig in modules
-    moduleConfig.includeFiles = __getIncludeFiles(moduleConfig)
+    moduleConfig.includeFiles = []
+    moduleConfig.includeFolder = __determinePath moduleConfig.baseUrl, compiledJavascriptDir
+    base = __normalize(path.join(moduleConfig.includeFolder, pathSeparator))
+
+    files = __getModuleFiles(moduleConfig)
+
+    # Filter out any files that should be loaded with a plugin, and add
+    # them to the includeFiles array, prefixed with the plugin path
+    files = __filterPluginFiles(moduleConfig, files, base) if moduleConfig.plugins?.length > 0
+
+    # Filter remaining files against include patterns
+    resultOfCall = __filterIncludeFiles(files, moduleConfig.patterns, base)
+    moduleConfig.includeFiles = moduleConfig.includeFiles.concat resultOfCall
+
     if moduleConfig.versionOf? and not moduleConfig.pathAlias?
       __setPathAlias(moduleConfig, modules)
 
@@ -74,7 +88,6 @@ __applyUserConfigs = (userConfig, modules) ->
   if matchedModules.length > 1
     # should log this using mimosa logger
     console.log "Should have found at most one match"
-    console.log matchedModules
     return
   if matchedModules.length is 1
     match = matchedModules[0]
@@ -86,29 +99,48 @@ __applyUserConfigs = (userConfig, modules) ->
     match.patterns = userConfig.patterns
     match.exclude = userConfig.exclude
     match.excludeRegex = userConfig.excludeRegex
+    match.plugins = userConfig.plugins
     if userConfig.versionOf? and userConfig.versionOf isnt ""
       match.versionOf = userConfig.versionOf
     match.includeAliasedFiles = userConfig.includeAliasedFiles
   if matchedModules.length is 0
     modules.push userConfig
 
-__getIncludeFiles = (moduleConfig) ->
-  includeFolder = __determinePath moduleConfig.baseUrl, compiledJavascriptDir
-  includeFiles = wrench.readdirSyncRecursive includeFolder
-  includeFiles = includeFiles.map (file) ->
-    path.join includeFolder, file
+__determinePath = (thePath, relativeTo) ->
+  return thePath if windowsDrive.test thePath
+  return thePath if thePath.indexOf("/") is 0
+  path.join relativeTo, thePath
+
+__getModuleFiles = (moduleConfig) ->
+  files = wrench.readdirSyncRecursive moduleConfig.includeFolder
+  files = files.map (file) ->
+    path.join moduleConfig.includeFolder, file
   .filter (file) ->
     fs.statSync(file).isFile() and
     moduleConfig.exclude.indexOf(file) is -1 and
     not (moduleConfig.excludeRegex and file.match(moduleConfig.excludeRegex))
   .map __normalize
-  # Filter includeFiles against include patterns
-  base = __normalize(path.join(includeFolder, pathSeparator))
-  moduleConfig.patterns.forEach (pattern) ->
+  return files
+
+__filterPluginFiles = (moduleConfig, files, base) ->
+  for pluginConfig in moduleConfig.plugins
+    pluginConfig.patterns.forEach (pattern) ->
+      absPattern = __normalize(path.resolve(base, pattern))
+      # The filtered result will actually be the files that
+      # don't match the plugin patterns
+      files = files.filter (file) ->
+        if minimatch file, absPattern
+          moduleConfig.includeFiles.push "#{pluginConfig.path}!#{file}"
+          return false
+        return true
+  return files
+
+__filterIncludeFiles = (files, patterns, base) ->
+  result = []
+  patterns.forEach (pattern) ->
     absPattern = __normalize(path.resolve(base, pattern))
-    includeFiles = includeFiles.filter (file) ->
-      minimatch file, absPattern
-  return includeFiles
+    result.push(file) for file in files when minimatch(file, absPattern)
+  return result
 
 __setPathAlias = (moduleConfig, modules) ->
   matchedModules = modules.filter (m) ->
@@ -154,26 +186,48 @@ __appendToModule = (moduleEntry, moduleConfig) ->
     moduleEntry.override = {} unless moduleEntry.override?
     moduleEntry.override.paths = {} unless moduleEntry.override.paths?
     moduleConfig.includeFiles.forEach (file) ->
-      amdFile = __getFileAMD file
-      alias = amdFile.replace moduleConfig.baseUrl, moduleConfig.pathAlias
-      moduleEntry.include.push(alias) if moduleConfig.includeAliasedFiles
-      unless moduleEntry.override.paths[alias]?
-        moduleEntry.override.paths[alias] = amdFile
+      pluginIndex = file.indexOf("!")
+      if pluginIndex > -1
+        amdFile = __getPluginFileAMD file, pluginIndex
+        pluginIndex = amdFile.indexOf("!")
+        # Only alias the file, not the plugin
+        filePart = amdFile.substring(pluginIndex+1)
+        aliasedFile = filePart.replace moduleConfig.baseUrl, moduleConfig.pathAlias
+        alias = "#{amdFile.substring(0,pluginIndex)}!#{aliasedFile}"
+        moduleEntry.include.push(alias) if moduleConfig.includeAliasedFiles
+        aliasedFile = aliasedFile.replace(path.extname(file), '')
+        unless moduleEntry.override.paths[aliasedFile]?
+          moduleEntry.override.paths[aliasedFile] = filePart.replace(path.extname(file), '')
+      else
+        amdFile = __getFileAMD(file).replace(path.extname(file), '')
+        alias = amdFile.replace moduleConfig.baseUrl, moduleConfig.pathAlias
+        moduleEntry.include.push(alias) if moduleConfig.includeAliasedFiles
+        unless moduleEntry.override.paths[alias]?
+          moduleEntry.override.paths[alias] = amdFile
   else
     moduleConfig.includeFiles.forEach (file) ->
-      moduleEntry.include.push __getFileAMD(file)
+      pluginIndex = file.indexOf("!")
+      if pluginIndex > -1
+        moduleEntry.include.push __getPluginFileAMD(file, pluginIndex)
+      else
+        moduleEntry.include.push __getFileAMD(file).replace(path.extname(file), '')
 
-__determinePath = (thePath, relativeTo) ->
-  return thePath if windowsDrive.test thePath
-  return thePath if thePath.indexOf("/") is 0
-  path.join relativeTo, thePath
+__getPluginFileAMD = (file, pluginIndex) ->
+  pluginPath = __determinePath(file.substring(0, pluginIndex) + ".js", compiledJavascriptDir)
+  # Use alias if the plugin has been aliased
+  pluginAlias = requireModule.manipulatePathWithAlias pluginPath
+  # If not aliased, get url/amd path
+  if pluginAlias is pluginPath
+    pluginAlias = path.relative(compiledJavascriptDir, pluginAlias).split(path.sep).join("/").replace(".js", '')
+  fileAMD = __getFileAMD(file.substring(pluginIndex+1))
+  return "#{pluginAlias}!#{fileAMD}"
 
 __getFileAMD = (file) ->
   # Use alias if path has been aliased
   fileAMD = requireModule.manipulatePathWithAlias file
   # Get relative url/amd path if not aliased
   fileAMD = path.relative(compiledJavascriptDir, file) if fileAMD is file
-  return fileAMD.split(path.sep).join("/").replace(path.extname(file), '')
+  return fileAMD.split(path.sep).join("/")
 
 __normalize = (filepath) -> 
   return filepath.replace(/\\/g, '/') if win32

@@ -5,6 +5,10 @@ exports.defaults = ->
     patterns: ["**/*.js"]
     exclude: [/-built.js$/,/reload-client.js$/]
     dontBuild: ["specs"]
+    plugins: [{
+      path: "vendor/requirejs-text/text"
+      patterns: ["**/*.html"]
+    }]
     modules: [{
       name: "app/app-built"
       baseUrl: "app"
@@ -31,6 +35,19 @@ exports.placeholder = ->
                                          # into modules. The module configs are still generated 
                                          # for use if the excluded modules are included in another
                                          # module. By default this excludes spec directories.
+
+      # plugins: [{                      # An array of plugin configs. This allows you to load
+                                         # specific files using requirejs plugins. An example is
+                                         # the text plugin for loading html files.
+
+      #   path: ""                       # The path to the plugin to be used. Should be relative
+                                         # to the javascriptsDir. If the file is aliased in your 
+                                         # requirejs config, the alias will be used instead.
+
+      #   patterns: []                   # Patterns to match files to be loaded using this plugin.
+                                         # Any files matched for a specific plugin will only be
+                                         # included using that plugin.
+      # }]
 
       # modules: [{                      # The modules list is dynamically built, but you can
                                          # add module configs here to override default behaviour.
@@ -60,6 +77,11 @@ exports.placeholder = ->
                                          # being included. If not specified here, uses the exclude
                                          # specified above. Must be specified here or above.
 
+      #   plugins: [{                    # This allows you to specify a differnet set of plugin
+                                         # configs for this specific module. Each config should
+                                         # have a path and a patterns array specified.
+      #   }]
+
       #   versionOf: ""                  # A string used to match the baseUrl or name of another
                                          # module. If a match is found, this module is built by
                                          # aliasing all of it's files to the baseUrl of the matched
@@ -78,6 +100,10 @@ exports.validate = (config, validators) ->
     validators.ifExistsIsArrayOfStrings(errors, "requireBuildAutoModule.patterns", config.requireBuildAutoModule.patterns)
     validators.ifExistsFileExcludeWithRegexAndString(errors, "requireBuildAutoModule.exclude", config.requireBuildAutoModule, config.watch.compiledDir)
     validators.ifExistsIsArrayOfStrings(errors, "requireBuildAutoModule.dontBuild", config.requireBuildAutoModule.dontBuild)
+    if validators.ifExistsIsArrayOfObjects(errors, "requireBuildAutoModule.plugins", config.requireBuildAutoModule.plugins)
+      for pluginConfig in config.requireBuildAutoModule.plugins
+        validators.stringMustExist(errors, "requireBuildAutoModule.plugins.path", pluginConfig.path)
+        validators.isArrayOfStringsMustExist(errors, "requireBuildAutoModule.plugins.patterns", pluginConfig.patterns)
     if validators.ifExistsIsArrayOfObjects(errors, "requireBuildAutoModule.modules", config.requireBuildAutoModule.modules)
       for moduleConfig in config.requireBuildAutoModule.modules
         validators.stringMustExist(errors, "requireBuildAutoModule.modules.name", moduleConfig.name)
@@ -88,6 +114,12 @@ exports.validate = (config, validators) ->
             moduleConfig.patterns = config.requireBuildAutoModule.patterns
         unless validators.ifExistsFileExcludeWithRegexAndString(errors, "requireBuildAutoModule.modules.exclude", moduleConfig, config.watch.compiledDir)
           moduleConfig.exclude = config.requireBuildAutoModule.exclude
+        if validators.ifExistsIsArrayOfObjects(errors, "requireBuildAutoModule.modules.plugins", moduleConfig.plugins)
+          for pluginConfig in moduleConfig.plugins
+            validators.stringMustExist(errors, "requireBuildAutoModule.modules.plugins.path", pluginConfig.path)
+            validators.isArrayOfStringsMustExist(errors, "requireBuildAutoModule.modules.plugins.patterns", pluginConfig.patterns)
+        else
+          moduleConfig.plugins = config.requireBuildAutoModule.plugins
         validators.ifExistsIsString(errors, "requireBuildAutoModule.modules.versionOf", moduleConfig.versionOf)
         unless validators.ifExistsIsBoolean(errors, "requireBuildAutoModule.modules.includeAliasedFiles", moduleConfig.includeAliasedFiles)
           moduleConfig.includeAliasedFiles = true
