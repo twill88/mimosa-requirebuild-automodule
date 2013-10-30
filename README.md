@@ -1,4 +1,4 @@
 mimosa-requirebuild-automodule
 ===========
 
-Far from complete... coming soon...
+Documentation coming soon!

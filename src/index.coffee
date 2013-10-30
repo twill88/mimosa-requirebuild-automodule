@@ -20,23 +20,72 @@ pathSeparator = if win32 then '\\' else '/'
 
 compiledJavascriptDir = ""
 
+modules = null
+
+detectedModuleCount = 0
+
+injectedConfigStart = "//>>Start - Automodule injected config. GENERATED CODE, DONT CHANGE -\n"
+injectedConfigEnd = "\n//>>End - Automodule injected config.\n"
+
 registration = (mimosaConfig, register) ->
   compiledJavascriptDir = mimosaConfig.watch.compiledJavascriptDir
+  e = mimosaConfig.extensions
+  requireModule = mimosaConfig.installedModules["mimosa-require"]
+  register ['postBuild'],             'beforeOptimize', _buildAutoModules
   if mimosaConfig.isOptimize
-    requireModule = mimosaConfig.installedModules["mimosa-require"]
-    e = mimosaConfig.extensions
     register ['add','update','remove'], 'beforeOptimize', _buildAutoModules, [e.javascript..., e.template...]
-    register ['postBuild'],             'beforeOptimize', _buildAutoModules
-  #else
-  #   Register watch stuff
+  else
+    register ['add','update','remove'], 'beforeOptimize', _buildPathsOverrideIfMatch
+
+_buildPathsOverrideIfMatch = (mimosaConfig, options, next) ->
+  jsSourceDir = "#{mimosaConfig.watch.sourceDir}#{pathSeparator}#{mimosaConfig.watch.javascriptDir}"
+  dirList = __getDirs jsSourceDir
+  # Unless there is a new module, we can continue using the original modules configs
+  unless dirList.length is detectedModuleCount and modules?
+    return _buildAutoModules mimosaConfig, options, next
+
+  # Update the module matching this file, and any modules versioned off the matching module
+  for moduleConfig in modules
+    if moduleConfig.versionOf? and options.inputFile.indexOf(__determinePath(moduleConfig.baseUrl, jsSourceDir)) > -1
+      __updateModuleVersionChain moduleConfig
+    
+  next()
+
+__updateModuleVersionChain = (moduleConfig) ->
+  moduleConfig.includeFiles = __getIncludeFiles moduleConfig
+  __addOtherModuleIncludes moduleConfig
+  dontBuild = mimosaConfig.requireBuildAutoModule.dontBuild
+  unless dontBuild.indexOf(moduleConfig.name) > -1 or dontBuild.indexOf(moduleConfig.baseUrl) > -1
+    __updateDataMain moduleConfig
+  for m in modules when m.versionOf? and (m.versionOf is moduleConfig.name or m.versionOf is moduleConfig.baseUrl)
+    __updateModuleVersionChain(m)
 
 _buildAutoModules = (mimosaConfig, options, next) ->
-  hasRunConfigs = options.runConfigs?.length > 0
-  return next() unless hasRunConfigs
+  if mimosaConfig.isOptimize?
+    return next() unless options.runConfigs?.length > 0
+  modules = __getModuleConfigs mimosaConfig
+  for moduleConfig in modules
+    moduleConfig.includeFiles = __getIncludeFiles moduleConfig
+  
+  # After building includeFiles for all modules, we can add
+  # dependencies of included modules to the moduleConfig
+  for moduleConfig in modules
+    __addOtherModuleIncludes moduleConfig
+    dontBuild = mimosaConfig.requireBuildAutoModule.dontBuild
+    unless dontBuild.indexOf(moduleConfig.name) > -1 or dontBuild.indexOf(moduleConfig.baseUrl) > -1
+      if mimosaConfig.isOptimize?
+        __applyToConfig(runConfig, moduleConfig) for runConfig in options.runConfigs
+      else
+        __updateDataMain moduleConfig
 
-  jsSourceDir = "#{mimosaConfig.watch.sourceDir}#{pathSeparator}#{mimosaConfig.watch.javascriptDir}"
-  moduleNames = __getDirs(jsSourceDir)
-  modules = moduleNames.map (dirName) ->
+  next()
+
+__getModuleConfigs = (mimosaConfig, dirList) ->
+  moduleNames = dirList
+  unless dirList?
+    moduleNames = __getDirs("#{mimosaConfig.watch.sourceDir}#{pathSeparator}#{mimosaConfig.watch.javascriptDir}")
+  detectedModuleCount = moduleNames.length
+  moduleConfigs = moduleNames.map (dirName) ->
     {
       name: "#{dirName}/#{dirName}-built"
       baseUrl: dirName
@@ -45,38 +94,11 @@ _buildAutoModules = (mimosaConfig, options, next) ->
       exclude: mimosaConfig.requireBuildAutoModule.exclude
       excludeRegex: mimosaConfig.requireBuildAutoModule.excludeRegex
       plugins: mimosaConfig.requireBuildAutoModule.plugins
+      dataMain: "main.js"
     }
-
   for userConfig in mimosaConfig.requireBuildAutoModule.modules
-    __applyUserConfigs(userConfig, modules)
-  
-  for moduleConfig in modules
-    moduleConfig.includeFiles = []
-    moduleConfig.includeFolder = __determinePath moduleConfig.baseUrl, compiledJavascriptDir
-    base = __normalize(path.join(moduleConfig.includeFolder, pathSeparator))
-
-    files = __getModuleFiles(moduleConfig)
-
-    # Filter out any files that should be loaded with a plugin, and add
-    # them to the includeFiles array, prefixed with the plugin path
-    files = __filterPluginFiles(moduleConfig, files, base) if moduleConfig.plugins?.length > 0
-
-    # Filter remaining files against include patterns
-    resultOfCall = __filterIncludeFiles(files, moduleConfig.patterns, base)
-    moduleConfig.includeFiles = moduleConfig.includeFiles.concat resultOfCall
-
-    if moduleConfig.versionOf? and not moduleConfig.pathAlias?
-      __setPathAlias(moduleConfig, modules)
-
-  # After building includeFiles for all modules, we can add
-  # dependencies of included modules to the moduleConfig
-  for moduleConfig in modules
-    __addOtherModuleIncludes moduleConfig, modules
-
-    for runConfig in options.runConfigs
-      __applyToConfig runConfig, moduleConfig
-
-  next()
+    __applyUserConfigs(userConfig, moduleConfigs)
+  return moduleConfigs
 
 __getDirs = (rootDir) ->
   fs.readdirSync(rootDir).filter (file) ->
@@ -102,9 +124,30 @@ __applyUserConfigs = (userConfig, modules) ->
     match.plugins = userConfig.plugins
     if userConfig.versionOf? and userConfig.versionOf isnt ""
       match.versionOf = userConfig.versionOf
+    match.dataMain = userConfig.dataMain
     match.includeAliasedFiles = userConfig.includeAliasedFiles
   if matchedModules.length is 0
     modules.push userConfig
+
+__getIncludeFiles = (moduleConfig) ->
+  # Setup includeFiles array, and setup path alias for later use
+    includeFiles = []
+    moduleConfig.includeFolder = __determinePath moduleConfig.baseUrl, compiledJavascriptDir
+    base = __normalize(path.join(moduleConfig.includeFolder, pathSeparator))
+    files = __getModuleFiles(moduleConfig)
+
+    # Filter out any files that should be loaded with a plugin, and add
+    # them to the includeFiles array, prefixed with the plugin path
+    files = __filterPluginFiles(moduleConfig, files, includeFiles, base) if moduleConfig.plugins?.length > 0
+    
+    # Filter remaining files against include patterns
+    filteredIncludes = __filterIncludeFiles(files, moduleConfig.patterns, base)
+    includeFiles = includeFiles.concat filteredIncludes
+
+    if moduleConfig.versionOf? and not moduleConfig.pathAlias?
+      __setPathAlias moduleConfig
+
+    return includeFiles
 
 __determinePath = (thePath, relativeTo) ->
   return thePath if windowsDrive.test thePath
@@ -122,7 +165,7 @@ __getModuleFiles = (moduleConfig) ->
   .map __normalize
   return files
 
-__filterPluginFiles = (moduleConfig, files, base) ->
+__filterPluginFiles = (moduleConfig, files, includeFiles, base) ->
   for pluginConfig in moduleConfig.plugins
     pluginConfig.patterns.forEach (pattern) ->
       absPattern = __normalize(path.resolve(base, pattern))
@@ -130,7 +173,7 @@ __filterPluginFiles = (moduleConfig, files, base) ->
       # don't match the plugin patterns
       files = files.filter (file) ->
         if minimatch file, absPattern
-          moduleConfig.includeFiles.push "#{pluginConfig.path}!#{file}"
+          includeFiles.push "#{pluginConfig.path}!#{file}"
           return false
         return true
   return files
@@ -142,7 +185,7 @@ __filterIncludeFiles = (files, patterns, base) ->
     result.push(file) for file in files when minimatch(file, absPattern)
   return result
 
-__setPathAlias = (moduleConfig, modules) ->
+__setPathAlias = (moduleConfig) ->
   matchedModules = modules.filter (m) ->
     moduleConfig.versionOf is m.name or moduleConfig.versionOf is m.baseUrl
   if matchedModules.length isnt 1
@@ -151,22 +194,64 @@ __setPathAlias = (moduleConfig, modules) ->
   match = matchedModules[0]
   if match.versionOf?
     unless match.pathAlias?
-      __setPathAlias match, modules
+      __setPathAlias match
     moduleConfig.pathAlias = match.pathAlias
   else
     moduleConfig.pathAlias = match.baseUrl
   moduleConfig.include.push match.name
 
-__addOtherModuleIncludes = (moduleConfig, modules) ->
+__addOtherModuleIncludes = (moduleConfig) ->
   return unless moduleConfig.include?.length > 0
   for include in moduleConfig.include when include isnt moduleConfig.name and include isnt moduleConfig.baseUrl
     for m in modules
       if include is m.name or include is m.baseUrl
         if m.include?.length > 0
-          __addOtherModuleIncludes m, modules
+          __addOtherModuleIncludes(m)
         if m.includeFiles?
           moduleConfig.includeFiles = moduleConfig.includeFiles.concat m.includeFiles
+  # Prevent adding duplicates
   moduleConfig.include = null
+
+__updateDataMain = (moduleConfig) ->
+  return unless moduleConfig.pathAlias? and moduleConfig.pathAlias isnt moduleConfig.baseUrl
+  dataMain = __determinePath moduleConfig.dataMain, moduleConfig.includeFolder
+  if fs.existsSync(dataMain) and fs.statSync(dataMain).isFile()
+    data = fs.readFileSync dataMain, {encoding: 'utf8'}
+    data = __removeInjectedConfig data
+    injectedConfig = "require.config({paths:#{JSON.stringify(__getPathOverrides(moduleConfig))}})"
+    fs.writeFileSync dataMain, "#{injectedConfigStart}#{injectedConfig}#{injectedConfigEnd}#{data}"
+    return
+  else
+    rootDataMain = null
+    for m in modules when m.baseUrl is moduleConfig.pathAlias
+      rootDataMain = __determinePath m.dataMain, m.includeFolder
+    if fs.existsSync(rootDataMain) and fs.statSync(rootDataMain).isFile()
+      data = fs.readFileSync rootDataMain, {encoding:'utf8'}
+      data = __removeInjectedConfig data
+      injectedConfig = "require.config({paths:#{JSON.stringify(__getPathOverrides(moduleConfig))}})"
+      fs.writeFileSync dataMain, "#{injectedConfigStart}#{injectedConfig}#{injectedConfigEnd}#{data}"
+    else
+      console.log "Couldn't find a main.js file to augment for module named: #{moduleConfig.name}"
+
+__removeInjectedConfig = (data) ->
+  j = data.indexOf(injectedConfigStart)
+  k = data.indexOf(injectedConfigEnd)
+  unless j is -1 or k is -1
+    data = data.substring(0,j) + data.substring(k+injectedConfigEnd.length)
+  return data
+
+__getPathOverrides = (moduleConfig) ->
+  pathOverrides = {}
+  moduleConfig.includeFiles.forEach (file) ->
+    pluginIndex = file.indexOf("!")
+    if pluginIndex > -1
+      amdFile = __getFileAMD(file.substring(pluginIndex+1)).replace(path.extname(file), '')
+    else
+      amdFile = __getFileAMD(file).replace(path.extname(file), '')
+    alias = amdFile.replace moduleConfig.baseUrl, moduleConfig.pathAlias
+    unless pathOverrides[alias]?
+      pathOverrides[alias] = amdFile
+  return pathOverrides
 
 __applyToConfig = (runConfig, moduleConfig) ->
   if runConfig.modules?.length > 0

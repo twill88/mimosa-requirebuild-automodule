@@ -4,7 +4,7 @@ exports.defaults = ->
   requireBuildAutoModule:
     patterns: ["**/*.js"]
     exclude: [/-built.js$/,/reload-client.js$/]
-    dontBuild: ["specs"]
+    dontBuild: ["specs", "Specs"]
     plugins: [{
       path: "vendor/requirejs-text/text"
       patterns: ["**/*.html"]
@@ -16,6 +16,7 @@ exports.defaults = ->
       patterns: []
       exclude: []
       versionOf: ""
+      dataMain: "main.js"
     }]
 
 exports.placeholder = ->
@@ -31,9 +32,10 @@ exports.placeholder = ->
       # exclude: []                      # A list of regexes or strings used to prevent the
                                          # inclusion of matching files.
 
-      # dontBuild: []                    # A list patterns used to prevent building matched folders
-                                         # into modules. The module configs are still generated 
-                                         # for use if the excluded modules are included in another
+      # dontBuild: []                    # A list of module names or baseUrls. Any modules
+                                         # with mathcing names or baseUrls will not be built.
+                                         # The module configs are still generated for use in 
+                                         # case the excluded modules are included in another
                                          # module. By default this excludes spec directories.
 
       # plugins: [{                      # An array of plugin configs. This allows you to load
@@ -89,6 +91,14 @@ exports.placeholder = ->
                                          # moduleC is a version of moduleB is a version of moduleA
                                          # Then, moduleC's files are aliased to the baseUrl of moduleA
 
+      #   dataMain: "main.js"            # The path to the main.js file for this module relative to
+                                         # the baseUrl. This is only used if the module is a versionOf
+                                         # another module, or another module is a versionOf this module.
+                                         # If moduleB is a version of moduleA, and no main.js file is
+                                         # found for moduleB, moduleA's main.js file is coppied into
+                                         # moduleB's baseUrl directory, and path aliases are added
+                                         # to support versioning in non-optimized builds.
+
       #   includeAliasedFiles: true      # If true, adds the aliased files to the module's include 
                                          # array, causing them to be built into the final module.
       # }]
@@ -121,6 +131,8 @@ exports.validate = (config, validators) ->
         else
           moduleConfig.plugins = config.requireBuildAutoModule.plugins
         validators.ifExistsIsString(errors, "requireBuildAutoModule.modules.versionOf", moduleConfig.versionOf)
+        unless validators.ifExistsIsString(errors, "requireBuildAutoModule.modules.dataMain", moduleConfig.dataMain)
+          moduleConfig.dataMain = "main.js"
         unless validators.ifExistsIsBoolean(errors, "requireBuildAutoModule.modules.includeAliasedFiles", moduleConfig.includeAliasedFiles)
           moduleConfig.includeAliasedFiles = true
 
