@@ -131,23 +131,23 @@ __applyUserConfigs = (userConfig, modules) ->
 
 __getIncludeFiles = (moduleConfig) ->
   # Setup includeFiles array, and setup path alias for later use
-    includeFiles = []
-    moduleConfig.includeFolder = __determinePath moduleConfig.baseUrl, compiledJavascriptDir
-    base = __normalize(path.join(moduleConfig.includeFolder, pathSeparator))
-    files = __getModuleFiles(moduleConfig)
+  includeFiles = []
+  moduleConfig.includeFolder = __determinePath moduleConfig.baseUrl, compiledJavascriptDir
+  base = __normalize(path.join(moduleConfig.includeFolder, pathSeparator))
+  files = __getModuleFiles(moduleConfig)
 
-    # Filter out any files that should be loaded with a plugin, and add
-    # them to the includeFiles array, prefixed with the plugin path
-    files = __filterPluginFiles(moduleConfig, files, includeFiles, base) if moduleConfig.plugins?.length > 0
-    
-    # Filter remaining files against include patterns
-    filteredIncludes = __filterIncludeFiles(files, moduleConfig.patterns, base)
-    includeFiles = includeFiles.concat filteredIncludes
+  # Filter out any files that should be loaded with a plugin, and add
+  # them to the includeFiles array, prefixed with the plugin path
+  files = __filterPluginFiles(moduleConfig, files, includeFiles, base) if moduleConfig.plugins?.length > 0
+  
+  # Filter remaining files against include patterns
+  filteredIncludes = __filterIncludeFiles(files, moduleConfig.patterns, base)
+  includeFiles = includeFiles.concat filteredIncludes
 
-    if moduleConfig.versionOf? and not moduleConfig.pathAlias?
-      __setPathAlias moduleConfig
+  if moduleConfig.versionOf? and not moduleConfig.pathAlias?
+    __setPathAlias moduleConfig
 
-    return includeFiles
+  return includeFiles
 
 __determinePath = (thePath, relativeTo) ->
   return thePath if windowsDrive.test thePath
@@ -196,6 +196,10 @@ __setPathAlias = (moduleConfig) ->
     unless match.pathAlias?
       __setPathAlias match
     moduleConfig.pathAlias = match.pathAlias
+    # This means that we have at least a three tier version of.
+    # We need to keep a list of all baseUrls so we can correctly alias those files
+    moduleConfig.versionBaseUrl = [] unless moduleConfig.versionBaseUrl?
+    moduleConfig.versionBaseUrl.push match.baseUrl
   else
     moduleConfig.pathAlias = match.baseUrl
   moduleConfig.include.push match.name
@@ -248,7 +252,13 @@ __getPathOverrides = (moduleConfig) ->
       amdFile = __getFileAMD(file.substring(pluginIndex+1)).replace(path.extname(file), '')
     else
       amdFile = __getFileAMD(file).replace(path.extname(file), '')
-    alias = amdFile.replace moduleConfig.baseUrl, moduleConfig.pathAlias
+    alias = amdFile
+    if amdFile.indexOf(moduleConfig.baseUrl) is 0
+      alias = amdFile.replace moduleConfig.baseUrl, moduleConfig.pathAlias
+    else
+      if moduleConfig.versionBaseUrl?.length > 0
+        for baseUrl in moduleConfig.versionBaseUrl when amdFile.indexOf(baseUrl) is 0
+          alias = amdFile.replace baseUrl, moduleConfig.pathAlias
     unless pathOverrides[alias]?
       pathOverrides[alias] = amdFile
   return pathOverrides
@@ -277,7 +287,13 @@ __appendToModule = (moduleEntry, moduleConfig) ->
         pluginIndex = amdFile.indexOf("!")
         # Only alias the file, not the plugin
         filePart = amdFile.substring(pluginIndex+1)
-        aliasedFile = filePart.replace moduleConfig.baseUrl, moduleConfig.pathAlias
+        aliasedFile = filePart
+        if filePart.indexOf(moduleConfig.baseUrl) is 0
+          aliasedFile = filePart.replace moduleConfig.baseUrl, moduleConfig.pathAlias
+        else
+          if moduleConfig.versionBaseUrl?.length > 0
+            for baseUrl in moduleConfig.versionBaseUrl when filePart.indexOf(baseUrl) is 0
+              aliasedFile = filePart.replace baseUrl, moduleConfig.pathAlias
         alias = "#{amdFile.substring(0,pluginIndex)}!#{aliasedFile}"
         moduleEntry.include.push(alias) if moduleConfig.includeAliasedFiles
         aliasedFile = aliasedFile.replace(path.extname(file), '')
@@ -285,7 +301,13 @@ __appendToModule = (moduleEntry, moduleConfig) ->
           moduleEntry.override.paths[aliasedFile] = filePart.replace(path.extname(file), '')
       else
         amdFile = __getFileAMD(file).replace(path.extname(file), '')
-        alias = amdFile.replace moduleConfig.baseUrl, moduleConfig.pathAlias
+        alias = amdFile
+        if amdFile.indexOf(moduleConfig.baseUrl) is 0
+          alias = amdFile.replace moduleConfig.baseUrl, moduleConfig.pathAlias
+        else
+          if moduleConfig.versionBaseUrl?.length > 0
+            for baseUrl in moduleConfig.versionBaseUrl when amdFile.indexOf(baseUrl) is 0
+              alias = amdFile.replace baseUrl, moduleConfig.pathAlias
         moduleEntry.include.push(alias) if moduleConfig.includeAliasedFiles
         unless moduleEntry.override.paths[alias]?
           moduleEntry.override.paths[alias] = amdFile
