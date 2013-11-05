@@ -35,7 +35,10 @@ registration = (mimosaConfig, register) ->
   if mimosaConfig.isOptimize
     register ['add','update','remove'], 'beforeOptimize', _buildAutoModules, [e.javascript..., e.template...]
   else
-    register ['add','update','remove'], 'beforeOptimize', _buildPathsOverrideIfMatch
+    register ['add'], 'beforeOptimize', _buildPathsOverrideIfMatch
+    # Removing files works a bit differently, the final file name of the file to be removed
+    # may need to be calculated. Running the full process for now, we can consider optimizing later
+    register ['remove'], 'beforeOptimize', _buildAutoModules
 
 _buildPathsOverrideIfMatch = (mimosaConfig, options, next) ->
   jsSourceDir = "#{mimosaConfig.watch.sourceDir}#{pathSeparator}#{mimosaConfig.watch.javascriptDir}"
@@ -43,21 +46,25 @@ _buildPathsOverrideIfMatch = (mimosaConfig, options, next) ->
   # Unless there is a new module, we can continue using the original modules configs
   unless dirList.length is detectedModuleCount and modules?
     return _buildAutoModules mimosaConfig, options, next
-
   # Update the module matching this file, and any modules versioned off the matching module
   for moduleConfig in modules
     if moduleConfig.versionOf? and options.inputFile.indexOf(__determinePath(moduleConfig.baseUrl, jsSourceDir)) > -1
-      __updateModuleVersionChain moduleConfig, mimosaConfig.requireBuildAutoModule.dontBuild
+      __updateModuleVersionChain moduleConfig, options, mimosaConfig.requireBuildAutoModule.dontBuild
     
   next()
 
-__updateModuleVersionChain = (moduleConfig, dontBuild) ->
-  moduleConfig.includeFiles = __getIncludeFiles moduleConfig
-  __addOtherModuleIncludes moduleConfig
+__updateModuleVersionChain = (moduleConfig, options, dontBuild) ->
+  for fileObject in options.files
+    file = __normalize fileObject.outputFileName
+    currentIndex = moduleConfig.includeFiles.indexOf(file)
+    if currentIndex is -1
+      moduleConfig.includeFiles.push(file)
+  
   unless dontBuild.indexOf(moduleConfig.name) > -1 or dontBuild.indexOf(moduleConfig.baseUrl) > -1
     __updateDataMain moduleConfig
+  # Update any other modules that are versioned off of this module
   for m in modules when m.versionOf? and (m.versionOf is moduleConfig.name or m.versionOf is moduleConfig.baseUrl)
-    __updateModuleVersionChain(m, dontBuild)
+    __updateModuleVersionChain(m, options, dontBuild)
 
 _buildAutoModules = (mimosaConfig, options, next) ->
   if mimosaConfig.isOptimize?
